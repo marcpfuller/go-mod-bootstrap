@@ -20,12 +20,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/environment"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/environment"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
 )
 
 const (
-	envKeyConfigUrl = "EDGEX_CONFIGURATION_PROVIDER"
+	envKeyConfigUrl = "EDGEX_CONFIG_PROVIDER"
 	goodUrlValue    = "consul.http://localhost:8500"
 	badUrlValue     = "Not a url"
 

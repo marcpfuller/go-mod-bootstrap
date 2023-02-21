@@ -3,6 +3,59 @@
 ## Bootstrap Module (in Go)
 [Github repository](https://github.com/edgexfoundry/go-mod-bootstrap)
 
+## Change Logs for EdgeX Dependencies
+
+- [go-mod-core-contracts](https://github.com/edgexfoundry/go-mod-core-contracts/blob/main/CHANGELOG.md)
+- [go-mod-messaging](https://github.com/edgexfoundry/go-mod-messaging/blob/main/CHANGELOG.md)
+- [go-mod-registry](https://github.com/edgexfoundry/go-mod-registry/blob/main/CHANGELOG.md)
+- [go-mod-secrets](https://github.com/edgexfoundry/go-mod-secrets/blob/main/CHANGELOG.md)
+- [go-mod-configuration](https://github.com/edgexfoundry/go-mod-configuration/blob/main/CHANGELOG.md) 
+
+## [v2.3.0] - 2022-11-09
+
+### Features ✨
+
+- Add capability to use messaging based Command Client ([#384](https://github.com/edgexfoundry/go-mod-bootstrap/issues/384)) ([#9ad12a8](https://github.com/edgexfoundry/go-mod-bootstrap/commits/9ad12a8))
+- Add Consul security metrics ([#383](https://github.com/edgexfoundry/go-mod-bootstrap/issues/383)) ([#a43e448](https://github.com/edgexfoundry/go-mod-bootstrap/commits/a43e448))
+- Add service metrics for Secrets requested and stored ([#376](https://github.com/edgexfoundry/go-mod-bootstrap/issues/376)) ([#42c52e2](https://github.com/edgexfoundry/go-mod-bootstrap/commits/42c52e2))
+- Added SecretUpdated  API ([#373](https://github.com/edgexfoundry/go-mod-bootstrap/issues/373)) ([#f58aa0b](https://github.com/edgexfoundry/go-mod-bootstrap/commits/f58aa0b))
+- Redact logging of insecure secrets env override ([#367](https://github.com/edgexfoundry/go-mod-bootstrap/issues/367)) ([#9565883](https://github.com/edgexfoundry/go-mod-bootstrap/commits/9565883))
+- Added HasSecret API ([#364](https://github.com/edgexfoundry/go-mod-bootstrap/issues/364)) ([#61f5503](https://github.com/edgexfoundry/go-mod-bootstrap/commits/61f5503))
+- Add new 'Topics' field and external MQTT BootstrapHandler ([#365](https://github.com/edgexfoundry/go-mod-bootstrap/issues/365)) ([#6dab13b](https://github.com/edgexfoundry/go-mod-bootstrap/commits/6dab13b))
+- Add common Messaging bootstrap handler ([#360](https://github.com/edgexfoundry/go-mod-bootstrap/issues/360)) ([#aaf2123](https://github.com/edgexfoundry/go-mod-bootstrap/commits/aaf2123))
+- Add Histogram to supported metric types ([#346](https://github.com/edgexfoundry/go-mod-bootstrap/issues/346)) ([#57130b2](https://github.com/edgexfoundry/go-mod-bootstrap/commits/57130b2))
+- Put CA cert into MessageBusInfo for all AuthModes ([#324](https://github.com/edgexfoundry/go-mod-bootstrap/issues/324)) ([#4dbfa01](https://github.com/edgexfoundry/go-mod-bootstrap/commits/4dbfa01))
+
+### Bug Fixes 🐛
+
+- Add capability to override config provider settings with "none" ([#381](https://github.com/edgexfoundry/go-mod-bootstrap/issues/381)) ([#3493ca4](https://github.com/edgexfoundry/go-mod-bootstrap/commits/3493ca4))
+- Run WatchForChange in a new thread ([#362](https://github.com/edgexfoundry/go-mod-bootstrap/issues/362)) ([#9c98e1c](https://github.com/edgexfoundry/go-mod-bootstrap/commits/9c98e1c))
+- Ensure exit with non-zero code when error occurs ([#358](https://github.com/edgexfoundry/go-mod-bootstrap/issues/358)) ([#816d4c9](https://github.com/edgexfoundry/go-mod-bootstrap/commits/816d4c9))
+
+### Build 👷
+
+- Upgrade to Go 1.18 ([#1361f04](https://github.com/edgexfoundry/go-mod-bootstrap/commit/1361f04))
+
+## [v2.2.0] - 2022-05-11
+
+### Features ✨
+
+- Add RequestLimitMiddleware for Service.MaxRequestSize config ([#321](https://github.com/edgexfoundry/go-mod-bootstrap/issues/321)) ([#42b690d](https://github.com/edgexfoundry/go-mod-bootstrap/commits/42b690d))
+- Implement service metrics bootstrap and common capability ([#313](https://github.com/edgexfoundry/go-mod-bootstrap/issues/313)) ([#8132711](https://github.com/edgexfoundry/go-mod-bootstrap/commits/8132711))
+- Location of client service obtained from the registry ([#305](https://github.com/edgexfoundry/go-mod-bootstrap/issues/305)) ([#78c5fc9](https://github.com/edgexfoundry/go-mod-bootstrap/commits/78c5fc9))
+- **security:** Use go-mod-secrets version that includes the capability of using non_delayedstart go build tags ([#317](https://github.com/edgexfoundry/go-mod-bootstrap/issues/317)) ([#2a6ac6a](https://github.com/edgexfoundry/go-mod-bootstrap/commits/2a6ac6a))
+- **security:** Integrate runtime spiffe token provider client from go-mod-secrets ([#4bf6376](https://github.com/edgexfoundry/go-mod-bootstrap/commits/4bf6376))
+
+### Bug Fixes 🐛
+
+- Generate proper Consul basepath on Windows ([#0cfe34c](https://github.com/edgexfoundry/go-mod-bootstrap/commits/0cfe34c))
+- **config:** ignore first change notification in ListenForCustomConfigChanges ([#315](https://github.com/edgexfoundry/go-mod-bootstrap/issues/315)) ([#6332299](https://github.com/edgexfoundry/go-mod-bootstrap/commits/6332299))
+
+### Build 👷
+
+- Added "make lint" target and added to "make test" target  ([#302](https://github.com/edgexfoundry/go-mod-bootstrap/issues/302)) ([#d813076](https://github.com/edgexfoundry/go-mod-bootstrap/commits/d813076))
+
+<a name="v2.1.0"></a>
 ## [v2.1.0] - 2021-11-17
 
 ### Features ✨

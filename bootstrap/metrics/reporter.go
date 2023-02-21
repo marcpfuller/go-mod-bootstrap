@@ -21,17 +21,17 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/container"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/interfaces"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/config"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/di"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/container"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/interfaces"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/di"
 
-	"github.com/edgexfoundry/go-mod-messaging/v2/messaging"
-	"github.com/edgexfoundry/go-mod-messaging/v2/pkg/types"
+	"github.com/edgexfoundry/go-mod-messaging/v3/messaging"
+	"github.com/edgexfoundry/go-mod-messaging/v3/pkg/types"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/common"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/dtos"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/common"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/dtos"
 
 	"github.com/hashicorp/go-multierror"
 	gometrics "github.com/rcrowley/go-metrics"
@@ -48,23 +48,31 @@ const (
 	timerMaxName          = "timer-max"
 	timerStddevName       = "timer-stddev"
 	timerVarianceName     = "timer-variance"
+	histogramCountName    = "histogram-count"
+	histogramMeanName     = "histogram-mean"
+	histogramMinName      = "histogram-min"
+	histogramMaxName      = "histogram-max"
+	histogramStddevName   = "histogram-stddev"
+	histogramVarianceName = "histogram-variance"
 )
 
 type messageBusReporter struct {
-	lc            logger.LoggingClient
-	serviceName   string
-	dic           *di.Container
-	messageClient messaging.MessageClient
-	config        *config.TelemetryInfo
+	lc               logger.LoggingClient
+	serviceName      string
+	dic              *di.Container
+	messageClient    messaging.MessageClient
+	config           *config.TelemetryInfo
+	baseMetricsTopic string
 }
 
 // NewMessageBusReporter creates a new MessageBus reporter which reports metrics to the EdgeX MessageBus
-func NewMessageBusReporter(lc logger.LoggingClient, serviceName string, dic *di.Container, config *config.TelemetryInfo) interfaces.MetricsReporter {
+func NewMessageBusReporter(lc logger.LoggingClient, baseTopic string, serviceName string, dic *di.Container, config *config.TelemetryInfo) interfaces.MetricsReporter {
 	reporter := &messageBusReporter{
-		lc:          lc,
-		serviceName: serviceName,
-		dic:         dic,
-		config:      config,
+		lc:               lc,
+		serviceName:      serviceName,
+		dic:              dic,
+		config:           config,
+		baseMetricsTopic: common.BuildTopic(baseTopic, common.MetricsPublishTopic, serviceName),
 	}
 
 	return reporter
@@ -140,6 +148,18 @@ func (r *messageBusReporter) Report(registry gometrics.Registry, metricTags map[
 			}
 			nextMetric, err = dtos.NewMetric(name, fields, tags)
 
+		case gometrics.Histogram:
+			snapshot := metric.Snapshot()
+			fields := []dtos.MetricField{
+				{Name: histogramCountName, Value: snapshot.Count()},
+				{Name: histogramMinName, Value: snapshot.Min()},
+				{Name: histogramMaxName, Value: snapshot.Max()},
+				{Name: histogramMeanName, Value: snapshot.Mean()},
+				{Name: histogramStddevName, Value: snapshot.StdDev()},
+				{Name: histogramVarianceName, Value: snapshot.Variance()},
+			}
+			nextMetric, err = dtos.NewMetric(name, fields, tags)
+
 		default:
 			errs = multierror.Append(errs, fmt.Errorf("metric type %T not supported", metric))
 			return
@@ -163,7 +183,7 @@ func (r *messageBusReporter) Report(registry gometrics.Registry, metricTags map[
 			ContentType:   common.ContentTypeJSON,
 		}
 
-		topic := fmt.Sprintf("%s/%s", r.baseTopic(), name)
+		topic := common.BuildTopic(r.baseMetricsTopic, name)
 		if err := r.messageClient.Publish(message, topic); err != nil {
 			errs = multierror.Append(errs, fmt.Errorf("failed to publish metric '%s' to topic '%s': %s", name, topic, err.Error()))
 			return
@@ -172,13 +192,9 @@ func (r *messageBusReporter) Report(registry gometrics.Registry, metricTags map[
 		}
 	})
 
-	r.lc.Debugf("Publish %d metrics to the '%s' base topic", publishedCount, r.baseTopic())
+	r.lc.Debugf("Publish %d metrics to the '%s' base topic", publishedCount, r.baseMetricsTopic)
 
 	return errs
-}
-
-func (r *messageBusReporter) baseTopic() string {
-	return fmt.Sprintf("%s/%s", r.config.PublishTopicPrefix, r.serviceName)
 }
 
 func buildMetricTags(tags map[string]string) []dtos.MetricTag {

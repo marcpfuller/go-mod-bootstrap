@@ -24,17 +24,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/dtos/common"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg"
+	gometrics "github.com/rcrowley/go-metrics"
+
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/dtos/common"
 	"github.com/hashicorp/go-multierror"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/interfaces"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/config"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/authtokenloader"
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/runtimetokenprovider"
-	"github.com/edgexfoundry/go-mod-secrets/v2/secrets"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/authtokenloader"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/runtimetokenprovider"
+	"github.com/edgexfoundry/go-mod-secrets/v3/secrets"
 )
 
 const (
@@ -50,29 +51,39 @@ type SecureProvider struct {
 	lc           logger.LoggingClient
 	loader       authtokenloader.AuthTokenLoader
 	// runtimeTokenProvider is for delayed start services
-	runtimeTokenProvider runtimetokenprovider.RuntimeTokenProvider
-	serviceKey           string
-	configuration        interfaces.Configuration
-	secretsCache         map[string]map[string]string // secret's path, key, value
-	cacheMutex           *sync.RWMutex
-	lastUpdated          time.Time
-	ctx                  context.Context
+	runtimeTokenProvider          runtimetokenprovider.RuntimeTokenProvider
+	serviceKey                    string
+	secretStoreInfo               config.SecretStoreInfo
+	secretsCache                  map[string]map[string]string // secret's path, key, value
+	cacheMutex                    *sync.RWMutex
+	lastUpdated                   time.Time
+	ctx                           context.Context
+	registeredSecretCallbacks     map[string]func(path string)
+	securitySecretsRequested      gometrics.Counter
+	securitySecretsStored         gometrics.Counter
+	securityConsulTokensRequested gometrics.Counter
+	securityConsulTokenDuration   gometrics.Timer
 }
 
 // NewSecureProvider creates & initializes Provider instance for secure secrets.
-func NewSecureProvider(ctx context.Context, config interfaces.Configuration, lc logger.LoggingClient,
+func NewSecureProvider(ctx context.Context, secretStoreInfo *config.SecretStoreInfo, lc logger.LoggingClient,
 	loader authtokenloader.AuthTokenLoader, runtimeTokenLoader runtimetokenprovider.RuntimeTokenProvider,
 	serviceKey string) *SecureProvider {
 	provider := &SecureProvider{
-		configuration:        config,
-		lc:                   lc,
-		loader:               loader,
-		runtimeTokenProvider: runtimeTokenLoader,
-		serviceKey:           serviceKey,
-		secretsCache:         make(map[string]map[string]string),
-		cacheMutex:           &sync.RWMutex{},
-		lastUpdated:          time.Now(),
-		ctx:                  ctx,
+		lc:                            lc,
+		loader:                        loader,
+		runtimeTokenProvider:          runtimeTokenLoader,
+		serviceKey:                    serviceKey,
+		secretStoreInfo:               *secretStoreInfo,
+		secretsCache:                  make(map[string]map[string]string),
+		cacheMutex:                    &sync.RWMutex{},
+		lastUpdated:                   time.Now(),
+		ctx:                           ctx,
+		registeredSecretCallbacks:     make(map[string]func(path string)),
+		securitySecretsRequested:      gometrics.NewCounter(),
+		securitySecretsStored:         gometrics.NewCounter(),
+		securityConsulTokensRequested: gometrics.NewCounter(),
+		securityConsulTokenDuration:   gometrics.NewTimer(),
 	}
 	return provider
 }
@@ -87,6 +98,8 @@ func (p *SecureProvider) SetClient(client secrets.SecretClient) {
 // keys specifies the secrets which to retrieve. If no keys are provided then all the keys associated with the
 // specified path will be returned.
 func (p *SecureProvider) GetSecret(path string, keys ...string) (map[string]string, error) {
+	p.securitySecretsRequested.Inc(1)
+
 	if cachedSecrets := p.getSecretsCache(path, keys...); cachedSecrets != nil {
 		return cachedSecrets, nil
 	}
@@ -160,6 +173,8 @@ func (p *SecureProvider) updateSecretsCache(path string, secrets map[string]stri
 // path specifies the type or location of the secrets to store
 // secrets map specifies the "key": "value" pairs of secrets to store
 func (p *SecureProvider) StoreSecret(path string, secrets map[string]string) error {
+	p.securitySecretsStored.Inc(1)
+
 	if p.secretClient == nil {
 		return errors.New("can't store secrets. Secure secret provider is not properly initialized")
 	}
@@ -175,6 +190,9 @@ func (p *SecureProvider) StoreSecret(path string, secrets map[string]string) err
 	if err != nil {
 		return err
 	}
+
+	// Execute Callbacks on registered secret paths.
+	p.SecretUpdatedAtPath(path)
 
 	// Synchronize cache access before clearing
 	p.cacheMutex.Lock()
@@ -197,7 +215,7 @@ func (p *SecureProvider) reloadTokenOnAuthError(err error) (bool, error) {
 	}
 
 	// Reload token in case new token was created causing the auth error
-	token, err := p.loader.Load(p.configuration.GetBootstrap().SecretStore.TokenFile)
+	token, err := p.loader.Load(p.secretStoreInfo.TokenFile)
 	if err != nil {
 		return false, err
 	}
@@ -222,6 +240,10 @@ func (p *SecureProvider) SecretsLastUpdated() time.Time {
 
 // GetAccessToken returns the access token for the requested token type.
 func (p *SecureProvider) GetAccessToken(tokenType string, serviceKey string) (string, error) {
+	p.securityConsulTokensRequested.Inc(1)
+	started := time.Now()
+	defer p.securityConsulTokenDuration.UpdateSince(started)
+
 	switch tokenType {
 	case TokenTypeConsul:
 		token, err := p.secretClient.GenerateConsulToken(serviceKey)
@@ -246,7 +268,7 @@ func (p *SecureProvider) GetAccessToken(tokenType string, serviceKey string) (st
 // DefaultTokenExpiredCallback is the default implementation of tokenExpiredCallback function
 // It utilizes the tokenFile to re-read the token and enable retry if any update from the expired token
 func (p *SecureProvider) DefaultTokenExpiredCallback(expiredToken string) (replacementToken string, retry bool) {
-	tokenFile := p.configuration.GetBootstrap().SecretStore.TokenFile
+	tokenFile := p.secretStoreInfo.TokenFile
 
 	// during the callback, we want to re-read the token from the disk
 	// specified by tokenFile and set the retry to true if a new token
@@ -276,7 +298,7 @@ func (p *SecureProvider) RuntimeTokenExpiredCallback(expiredToken string) (repla
 }
 
 // LoadServiceSecrets loads the service secrets from the specified file and stores them in the service's SecretStore
-func (p *SecureProvider) LoadServiceSecrets(secretStoreConfig config.SecretStoreInfo) error {
+func (p *SecureProvider) LoadServiceSecrets(secretStoreConfig *config.SecretStoreInfo) error {
 
 	contents, err := os.ReadFile(secretStoreConfig.SecretsFile)
 	if err != nil {
@@ -348,4 +370,85 @@ func prepareSecret(secret ServiceSecret) (string, map[string]string) {
 	path := strings.TrimSpace(secret.Path)
 
 	return path, secretsKV
+}
+
+// HasSecret returns true if the service's SecretStore contains a secret at the specified path.
+func (p *SecureProvider) HasSecret(path string) (bool, error) {
+	_, err := p.GetSecret(path)
+
+	if err != nil {
+		_, ok := err.(pkg.ErrPathNotFound)
+		if ok {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return true, nil
+}
+
+// ListSecretPaths returns a list of paths for the current service from an insecure/secure secret store.
+func (p *SecureProvider) ListSecretPaths() ([]string, error) {
+
+	if p.secretClient == nil {
+		return nil, errors.New("can't get secret paths. Secure secret provider is not properly initialized")
+	}
+
+	secureSecrets, err := p.secretClient.GetKeys("")
+
+	retry, err := p.reloadTokenOnAuthError(err)
+	if retry {
+		// Retry with potential new token
+		secureSecrets, err = p.secretClient.GetKeys("")
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("unable to get secret paths: %v", err)
+	}
+
+	return secureSecrets, nil
+}
+
+// RegisteredSecretUpdatedCallback registers a callback for a secret.
+func (p *SecureProvider) RegisteredSecretUpdatedCallback(path string, callback func(path string)) error {
+	if _, ok := p.registeredSecretCallbacks[path]; ok {
+		return fmt.Errorf("there is a callback already registered for path '%v'", path)
+	}
+
+	// Register new call back for path.
+	p.registeredSecretCallbacks[path] = callback
+
+	return nil
+}
+
+// SecretUpdatedAtPath performs updates and callbacks for an updated secret or path.
+func (p *SecureProvider) SecretUpdatedAtPath(path string) {
+	p.lastUpdated = time.Now()
+	if p.registeredSecretCallbacks != nil {
+		// Execute Callback for provided path.
+		for k, v := range p.registeredSecretCallbacks {
+			if k == path {
+				p.lc.Debugf("invoking callback registered for path: '%s'", path)
+				v(path)
+				return
+			}
+		}
+	}
+}
+
+// DeregisterSecretUpdatedCallback removes a secret's registered callback path.
+func (p *SecureProvider) DeregisterSecretUpdatedCallback(path string) {
+	// Remove path from map.
+	delete(p.registeredSecretCallbacks, path)
+}
+
+// GetMetricsToRegister returns all metric objects that needs to be registered.
+func (p *SecureProvider) GetMetricsToRegister() map[string]interface{} {
+	return map[string]interface{}{
+		secretsRequestedMetricName:        p.securitySecretsRequested,
+		secretsStoredMetricName:           p.securitySecretsStored,
+		securityConsulTokensRequestedName: p.securityConsulTokensRequested,
+		securityConsulTokenDurationName:   p.securityConsulTokenDuration,
+	}
 }

@@ -1,6 +1,6 @@
 /*******************************************************************************
  * Copyright 2019 Dell Inc.
- * Copyright 2020 Intel Inc.
+ * Copyright 2023 Intel Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -17,24 +17,26 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/config"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/container"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/environment"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/flags"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/interfaces"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/registration"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/startup"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/di"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/config"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/container"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/environment"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/flags"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/interfaces"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/registration"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/secret"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/startup"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/di"
 
-	"github.com/edgexfoundry/go-mod-registry/v2/registry"
+	"github.com/edgexfoundry/go-mod-registry/v3/registry"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/models"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/models"
 )
 
 // Deferred defines the signature of a function returned by RunAndReturnWaitGroup that should be executed via defer.
@@ -86,7 +88,8 @@ func RunAndReturnWaitGroup(
 	configUpdated config.UpdatedStream,
 	startupTimer startup.Timer,
 	dic *di.Container,
-	useSecretProvider bool,
+	useSecretProvider bool, // TODO: remove useSecretProvider and use serviceType in place with its constant
+	serviceType string,
 	handlers []interfaces.BootstrapHandler) (*sync.WaitGroup, Deferred, bool) {
 
 	var err error
@@ -108,11 +111,19 @@ func RunAndReturnWaitGroup(
 
 	envVars := environment.NewVariables(lc)
 
+	var secretProvider interfaces.SecretProvider
+	if useSecretProvider {
+		secretProvider, err = secret.NewSecretProvider(serviceConfig, envVars, ctx, startupTimer, dic, serviceKey)
+		if err != nil {
+			fatalError(fmt.Errorf("failed to create SecretProvider: %s", err.Error()), lc)
+		}
+	}
+
 	// The SecretProvider is initialized and placed in the DIS as part of processing the configuration due
 	// to the need for it to be used to get Access Token for the Configuration Provider and having to wait to
 	// initialize it until after the configuration is loaded from file.
 	configProcessor := config.NewProcessor(commonFlags, envVars, startupTimer, ctx, &wg, configUpdated, dic)
-	if err := configProcessor.Process(serviceKey, configStem, serviceConfig, useSecretProvider); err != nil {
+	if err := configProcessor.Process(serviceKey, serviceType, configStem, serviceConfig, secretProvider); err != nil {
 		fatalError(err, lc)
 	}
 
@@ -162,6 +173,25 @@ func RunAndReturnWaitGroup(
 		}
 	}
 
+	// Service that don't use the Security Provider also will not collect metrics. These are the security services that
+	// run during bootstrapping of the secure deployment
+	if useSecretProvider && startedSuccessfully {
+		// Have to delay registering the general common service metrics until all bootstrap handlers have run so that there is
+		// opportunity for the MetricsManager to have been created.
+		metricsManager := container.MetricsManagerFrom(dic.Get)
+		if metricsManager != nil {
+			secretProvider := container.SecretProviderFrom(dic.Get)
+			if secretProvider != nil {
+				metrics := secretProvider.GetMetricsToRegister()
+				registerMetrics(metricsManager, metrics, lc)
+
+				// TODO: use this same approach to register future service metric controlled by other components
+			}
+		} else {
+			lc.Warn("MetricsManager not available. General common service metrics will not be reported. ")
+		}
+	}
+
 	return &wg, deferred, startedSuccessfully
 }
 
@@ -179,9 +209,10 @@ func Run(
 	startupTimer startup.Timer,
 	dic *di.Container,
 	useSecretProvider bool,
+	serviceType string,
 	handlers []interfaces.BootstrapHandler) {
 
-	wg, deferred, _ := RunAndReturnWaitGroup(
+	wg, deferred, success := RunAndReturnWaitGroup(
 		ctx,
 		cancel,
 		commonFlags,
@@ -192,11 +223,31 @@ func Run(
 		startupTimer,
 		dic,
 		useSecretProvider,
+		serviceType,
 		handlers,
 	)
+
+	if !success {
+		// This only occurs when a bootstrap handler has fail.
+		// The handler will have logged an error, so not need to log a message here.
+		cancel()
+		os.Exit(1)
+	}
 
 	defer deferred()
 
 	// wait for go routines to stop executing.
 	wg.Wait()
+}
+
+func registerMetrics(metricsManager interfaces.MetricsManager, metrics map[string]interface{}, lc logger.LoggingClient) {
+	for metricName, metric := range metrics {
+		err := metricsManager.Register(metricName, metric, nil)
+		if err != nil {
+			lc.Warnf("Unable to register %s metric for reporting: %v", metricName, err)
+			continue
+		}
+
+		lc.Infof("%s metric registered and will be reported (if enabled)", metricName)
+	}
 }

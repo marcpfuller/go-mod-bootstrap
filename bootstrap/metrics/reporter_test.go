@@ -16,33 +16,31 @@ package metrics
 
 import (
 	"encoding/json"
-	"fmt"
 	"testing"
 
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/common"
 	gometrics "github.com/rcrowley/go-metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/dtos"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/dtos"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/container"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/config"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/di"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/container"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/di"
 
-	"github.com/edgexfoundry/go-mod-messaging/v2/messaging/mocks"
-	"github.com/edgexfoundry/go-mod-messaging/v2/pkg/types"
+	"github.com/edgexfoundry/go-mod-messaging/v3/messaging/mocks"
+	"github.com/edgexfoundry/go-mod-messaging/v3/pkg/types"
 )
 
 func TestNewMessageBusReporter(t *testing.T) {
 	expectedServiceName := "test-service"
-	baseTopic := "metrics"
-	expectedBaseTopic := "metrics/test-service"
+	expectedBaseTopic := common.BuildTopic(common.DefaultBaseTopic, common.MetricsPublishTopic, expectedServiceName)
 
 	expectedTelemetryConfig := &config.TelemetryInfo{
-		Interval:           "30s",
-		PublishTopicPrefix: baseTopic,
+		Interval: "30s",
 		Metrics: map[string]bool{
 			"MyMetric": true,
 		},
@@ -73,12 +71,12 @@ func TestNewMessageBusReporter(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
-			r := NewMessageBusReporter(logger.NewMockClient(), test.ExpectedServiceName, nil, expectedTelemetryConfig)
+			r := NewMessageBusReporter(logger.NewMockClient(), common.DefaultBaseTopic, test.ExpectedServiceName, nil, expectedTelemetryConfig)
 			actual := r.(*messageBusReporter)
 			assert.NotNil(t, actual)
 			assert.Equal(t, expectedServiceName, actual.serviceName)
 			assert.Equal(t, expectedTelemetryConfig, actual.config)
-			assert.Equal(t, expectedBaseTopic, actual.baseTopic())
+			assert.Equal(t, expectedBaseTopic, actual.baseMetricsTopic)
 		})
 	}
 
@@ -88,12 +86,10 @@ func TestMessageBusReporter_Report(t *testing.T) {
 	expectedServiceName := "test-service"
 	expectedMetricName := "test-metric"
 	unexpectedMetricName := "disabled-metric"
-	baseTopic := "metrics"
-	expectedTopic := fmt.Sprintf("%s/%s/%s", baseTopic, expectedServiceName, expectedMetricName)
+	expectedTopic := common.BuildTopic(common.DefaultBaseTopic, common.MetricsPublishTopic, expectedServiceName, expectedMetricName)
 
 	expectedTelemetryConfig := &config.TelemetryInfo{
-		Interval:           "30s",
-		PublishTopicPrefix: baseTopic,
+		Interval: "30s",
 		Metrics: map[string]bool{
 			expectedMetricName:   true,
 			unexpectedMetricName: false,
@@ -164,6 +160,24 @@ func TestMessageBusReporter_Report(t *testing.T) {
 		}...)
 	timer := gometrics.NewTimer()
 
+	expectedHistogramMetric := expectedCounterMetric
+	copy(expectedHistogramMetric.Fields, expectedCounterMetric.Fields)
+	expectedHistogramMetric.Fields = []dtos.MetricField{
+		{
+			Name:  histogramCountName,
+			Value: float64(0),
+		}}
+	expectedHistogramMetric.Fields[0].Value = float64(0)
+	expectedHistogramMetric.Fields = append(expectedHistogramMetric.Fields,
+		[]dtos.MetricField{
+			{Name: histogramMinName, Value: float64(0)},
+			{Name: histogramMaxName, Value: float64(0)},
+			{Name: histogramMeanName, Value: float64(0)},
+			{Name: histogramStddevName, Value: float64(0)},
+			{Name: histogramVarianceName, Value: float64(0)},
+		}...)
+	histogram := gometrics.NewHistogram(gometrics.NewUniformSample(1028))
+
 	tests := []struct {
 		Name           string
 		Metric         interface{}
@@ -174,6 +188,7 @@ func TestMessageBusReporter_Report(t *testing.T) {
 		{"Happy path - Gauge", gauge, &expectedGaugeMetric, false},
 		{"Happy path - GaugeFloat64", gaugeFloat64, &expectedGaugeFloat64Metric, false},
 		{"Happy path - Timer", timer, &expectedTimerMetric, false},
+		{"Happy path - Histogram", histogram, &expectedHistogramMetric, false},
 		{"No Metrics", nil, nil, false},
 		{"Unsupported Metric", gometrics.NewMeter(), nil, true},
 	}
@@ -203,7 +218,7 @@ func TestMessageBusReporter_Report(t *testing.T) {
 				},
 			})
 
-			target := NewMessageBusReporter(logger.NewMockClient(), expectedServiceName, dic, expectedTelemetryConfig)
+			target := NewMessageBusReporter(logger.NewMockClient(), common.DefaultBaseTopic, expectedServiceName, dic, expectedTelemetryConfig)
 
 			if test.Metric != nil {
 				err = reg.Register(expectedMetricName, test.Metric)

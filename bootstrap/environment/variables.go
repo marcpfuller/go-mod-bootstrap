@@ -19,13 +19,14 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/models"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/models"
 
-	"github.com/edgexfoundry/go-mod-configuration/v2/pkg/types"
+	"github.com/edgexfoundry/go-mod-configuration/v3/pkg/types"
 
 	"github.com/pelletier/go-toml"
 )
@@ -33,29 +34,44 @@ import (
 const (
 	bootTimeoutSecondsDefault = 60
 	bootRetrySecondsDefault   = 1
-	defaultConfDirValue       = "./res"
+	defaultConfigDirValue     = "./res"
 
-	envKeyConfigUrl       = "EDGEX_CONFIGURATION_PROVIDER"
+	envKeyConfigUrl       = "EDGEX_CONFIG_PROVIDER"
 	envKeyUseRegistry     = "EDGEX_USE_REGISTRY"
 	envKeyStartupDuration = "EDGEX_STARTUP_DURATION"
 	envKeyStartupInterval = "EDGEX_STARTUP_INTERVAL"
-	envConfDir            = "EDGEX_CONF_DIR"
+	envConfigDir          = "EDGEX_CONFIG_DIR"
 	envProfile            = "EDGEX_PROFILE"
-	envFile               = "EDGEX_CONFIG_FILE"
+	envConfigFile         = "EDGEX_CONFIG_FILE"
+
+	noConfigProviderValue = "none"
 
 	tomlPathSeparator = "."
 	tomlNameSeparator = "-"
 	envNameSeparator  = "_"
+
+	// insecureSecretsRegexStr is a regex to look for toml keys that are under the Secrets sub-key of values within the
+	// Writable.InsecureSecrets topology.
+	// Examples:
+	//			Matches: Writable.InsecureSecrets.credentials001.Secrets.password
+	//	 Does Not Match: Writable.InsecureSecrets.credentials001.Path
+	insecureSecretsRegexStr = "^Writable\\.InsecureSecrets\\.[^.]+\\.Secrets\\..+$" //#nosec G101 -- This is a false positive
+	// redactedStr is the value to print for redacted variable values
+	redactedStr = "<redacted>"
 )
 
-// Variables is receiver that holds Variables variables and encapsulates toml.Tree-based configuration field
+var (
+	insecureSecretsRegex = regexp.MustCompile(insecureSecretsRegexStr)
+)
+
+// Variables is a receiver that holds Variables variables and encapsulates toml.Tree-based configuration field
 // overrides.  Assumes "_" embedded in Variables variable key separates sub-structs; e.g. foo_bar_baz might refer to
 //
-// 		type foo struct {
-// 			bar struct {
-//          	baz string
-//  		}
-//		}
+//			type foo struct {
+//				bar struct {
+//	         		baz string
+//	 			}
+//			}
 type Variables struct {
 	variables map[string]string
 	lc        logger.LoggingClient
@@ -190,6 +206,10 @@ func (e *Variables) OverrideConfigProviderInfo(configProviderInfo types.ServiceC
 	if len(url) > 0 {
 		logEnvironmentOverride(e.lc, "Configuration Provider Information", envKeyConfigUrl, url)
 
+		if url == noConfigProviderValue {
+			return types.ServiceConfig{}, nil
+		}
+
 		if err := configProviderInfo.PopulateFromUrl(url); err != nil {
 			return types.ServiceConfig{}, err
 		}
@@ -291,23 +311,23 @@ func GetStartupInfo(serviceKey string) StartupInfo {
 	return startup
 }
 
-// GetConfDir get the config directory value from an Variables variable value (if it exists)
+// GetConfigDir get the config directory value from a Variables variable value (if it exists)
 // or uses passed in value or default if previous result in blank.
-func GetConfDir(lc logger.LoggingClient, configDir string) string {
-	envValue := os.Getenv(envConfDir)
+func GetConfigDir(lc logger.LoggingClient, configDir string) string {
+	envValue := os.Getenv(envConfigDir)
 	if len(envValue) > 0 {
 		configDir = envValue
-		logEnvironmentOverride(lc, "-c/-confdir", envConfDir, envValue)
+		logEnvironmentOverride(lc, "-cd/-configDir", envConfigDir, envValue)
 	}
 
 	if len(configDir) == 0 {
-		configDir = defaultConfDirValue
+		configDir = defaultConfigDirValue
 	}
 
 	return configDir
 }
 
-// GetProfileDir get the profile directory value from an Variables variable value (if it exists)
+// GetProfileDir get the profile directory value from a Variables variable value (if it exists)
 // or uses passed in value or default if previous result in blank.
 func GetProfileDir(lc logger.LoggingClient, profileDir string) string {
 	envValue := os.Getenv(envProfile)
@@ -323,13 +343,13 @@ func GetProfileDir(lc logger.LoggingClient, profileDir string) string {
 	return profileDir
 }
 
-// GetConfigFileName gets the configuration filename value from an Variables variable value (if it exists)
+// GetConfigFileName gets the configuration filename value from a Variables variable value (if it exists)
 // or uses passed in value.
 func GetConfigFileName(lc logger.LoggingClient, configFileName string) string {
-	envValue := os.Getenv(envFile)
+	envValue := os.Getenv(envConfigFile)
 	if len(envValue) > 0 {
 		configFileName = envValue
-		logEnvironmentOverride(lc, "-f/-file", envFile, envValue)
+		logEnvironmentOverride(lc, "-cf/--configFile", envConfigFile, envValue)
 	}
 
 	return configFileName
@@ -348,6 +368,11 @@ func parseCommaSeparatedSlice(value string) (values []interface{}) {
 }
 
 // logEnvironmentOverride logs that an option or configuration has been override by an environment variable.
+// If the key belongs to a Secret within Writable.InsecureSecrets, the value is redacted when printing it.
 func logEnvironmentOverride(lc logger.LoggingClient, name string, key string, value string) {
-	lc.Info(fmt.Sprintf("Variables override of '%s' by environment variable: %s=%s", name, key, value))
+	valueStr := value
+	if insecureSecretsRegex.MatchString(name) {
+		valueStr = redactedStr
+	}
+	lc.Infof("Variables override of '%s' by environment variable: %s=%s", name, key, valueStr)
 }

@@ -20,18 +20,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/environment"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
 	mock2 "github.com/stretchr/testify/mock"
 
-	bootstrapConfig "github.com/edgexfoundry/go-mod-bootstrap/v2/config"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg"
-	mocks2 "github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/authtokenloader/mocks"
-	runtimeTokenMock "github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/runtimetokenprovider/mocks"
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/types"
-	"github.com/edgexfoundry/go-mod-secrets/v2/secrets"
-	"github.com/edgexfoundry/go-mod-secrets/v2/secrets/mocks"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg"
+	mocks2 "github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/authtokenloader/mocks"
+	runtimeTokenMock "github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/runtimetokenprovider/mocks"
+	"github.com/edgexfoundry/go-mod-secrets/v3/secrets"
+	"github.com/edgexfoundry/go-mod-secrets/v3/secrets/mocks"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,7 +60,8 @@ func TestSecureProvider_GetSecrets(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.Name, func(t *testing.T) {
-			target := NewSecureProvider(context.Background(), tc.Config, logger.MockLogger{}, nil, nil, "testService")
+
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 			target.SetClient(tc.Client)
 			actual, err := target.GetSecret(tc.Path, tc.Keys...)
 			if tc.ExpectError {
@@ -82,7 +82,7 @@ func TestSecureProvider_GetSecrets_Cached(t *testing.T) {
 	// Use the Once method so GetSecrets can be changed below
 	mock.On("GetSecrets", "redis", "username", "password").Return(expected, nil).Once()
 
-	target := NewSecureProvider(context.Background(), nil, logger.MockLogger{}, nil, nil, "testService")
+	target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 	target.SetClient(mock)
 
 	actual, err := target.GetSecret("redis", "username", "password")
@@ -109,7 +109,7 @@ func TestSecureProvider_GetSecrets_Cached_Invalidated(t *testing.T) {
 	mock.On("GetSecrets", "redis", "username", "password").Return(expected, nil).Once()
 	mock.On("StoreSecrets", "redis", expected).Return(nil)
 
-	target := NewSecureProvider(context.Background(), nil, logger.MockLogger{}, nil, nil, "testService")
+	target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 	target.SetClient(mock)
 
 	actual, err := target.GetSecret("redis", "username", "password")
@@ -146,7 +146,7 @@ func TestSecureProvider_StoreSecrets_Secure(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.Name, func(t *testing.T) {
-			target := NewSecureProvider(context.Background(), nil, logger.MockLogger{}, nil, nil, "testService")
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 			target.SetClient(tc.Client)
 
 			err := target.StoreSecret(tc.Path, input)
@@ -165,7 +165,7 @@ func TestSecureProvider_SecretsLastUpdated(t *testing.T) {
 	mock := &mocks.SecretClient{}
 	mock.On("StoreSecrets", "redis", input).Return(nil)
 
-	target := NewSecureProvider(context.Background(), nil, logger.MockLogger{}, nil, nil, "testService")
+	target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 	target.SetClient(mock)
 
 	previous := target.SecretsLastUpdated()
@@ -177,7 +177,7 @@ func TestSecureProvider_SecretsLastUpdated(t *testing.T) {
 }
 
 func TestSecureProvider_SecretsUpdated(t *testing.T) {
-	target := NewSecureProvider(context.Background(), nil, logger.MockLogger{}, nil, nil, "testService")
+	target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 	previous := target.SecretsLastUpdated()
 	time.Sleep(1 * time.Second)
 	target.SecretsUpdated()
@@ -211,15 +211,15 @@ func TestSecureProvider_DefaultTokenExpiredCallback(t *testing.T) {
 		{"Same Token", sameTokenFile, expiredToken, expiredToken, false},
 	}
 
+	lc := logger.NewMockClient()
+	envVars := environment.NewVariables(lc)
+	secretStore, err := BuildSecretStoreConfig("unit-test", envVars, lc)
+	require.NoError(t, err)
+
 	for _, tc := range tests {
 		t.Run(tc.Name, func(t *testing.T) {
-			config := TestConfig{
-				SecretStore: bootstrapConfig.SecretStoreInfo{
-					TokenFile: tc.TokenFile,
-				},
-			}
-
-			target := NewSecureProvider(context.Background(), config, logger.MockLogger{}, mockTokenLoader, nil, "testService")
+			secretStore.TokenFile = tc.TokenFile
+			target := NewSecureProvider(context.Background(), secretStore, lc, mockTokenLoader, nil, "testService")
 			actualToken, actualRetry := target.DefaultTokenExpiredCallback(tc.ExpiredToken)
 			assert.Equal(t, tc.ExpectedToken, actualToken)
 			assert.Equal(t, tc.ExpectedRetry, actualRetry)
@@ -250,20 +250,7 @@ func TestSecureProvider_RuntimeTokenExpiredCallback(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.Name, func(t *testing.T) {
-			config := TestConfig{
-				SecretStore: bootstrapConfig.SecretStoreInfo{
-					RuntimeTokenProvider: types.RuntimeTokenProviderInfo{
-						Enabled:        true,
-						Protocol:       "https",
-						Host:           "provider.test.com",
-						Port:           12345,
-						TrustDomain:    "mydomain",
-						EndpointSocket: "/tmp/edgex/socket",
-					},
-				},
-			}
-
-			target := NewSecureProvider(context.Background(), config, logger.MockLogger{}, nil, mockRuntimeTokenProvider, tc.TestService)
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, mockRuntimeTokenProvider, tc.TestService)
 			actualToken, actualRetry := target.RuntimeTokenExpiredCallback(tc.ExpiredToken)
 			assert.Equal(t, tc.ExpectedToken, actualToken)
 			assert.Equal(t, tc.ExpectedRetry, actualRetry)
@@ -288,7 +275,7 @@ func TestSecureProvider_GetAccessToken(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			target := NewSecureProvider(context.Background(), TestConfig{}, logger.MockLogger{}, nil, nil, "testService")
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 			target.SetClient(mock)
 
 			actualToken, err := target.GetAccessToken(test.tokenType, testServiceKey)
@@ -321,7 +308,7 @@ func TestSecureProvider_seedSecrets(t *testing.T) {
 		{"Store Error", allGood, "", true, "1 error occurred:\n\t* failed to store secret for 'auth': store failed\n\n"},
 	}
 
-	target := NewSecureProvider(context.Background(), TestConfig{}, logger.MockLogger{}, nil, nil, "testService")
+	target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -347,4 +334,165 @@ func TestSecureProvider_seedSecrets(t *testing.T) {
 			assert.Equal(t, test.expectedJson, string(actual))
 		})
 	}
+}
+
+func TestSecureProvider_HasSecrets(t *testing.T) {
+	expected := map[string]string{"username": "admin", "password": "sam123!"}
+
+	mock := &mocks.SecretClient{}
+	errorMessage := "Received a '404' response from the secret store"
+	mock.On("GetSecrets", "redis", "username", "password").Return(expected, nil)
+	mock.On("GetSecrets", "redis").Return(expected, nil)
+	mock.On("GetSecrets", "missing").Return(nil, pkg.NewErrPathNotFound(errorMessage))
+	mock.On("GetSecrets", "error").Return(nil, errors.New("no key"))
+
+	tests := []struct {
+		Name         string
+		Path         string
+		Client       secrets.SecretClient
+		ExpectError  bool
+		ExpectResult bool
+	}{
+		{"Valid - found", "redis", mock, false, true},
+		{"Valid - not found", "missing", mock, false, false},
+		{"Invalid No Client", "redis", nil, true, false},
+		{"Invalid Error", "error", mock, true, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
+			target.SetClient(tc.Client)
+			actual, err := target.HasSecret(tc.Path)
+
+			if tc.ExpectError {
+				require.Error(t, err)
+				return
+			}
+
+			assert.Equal(t, tc.ExpectResult, actual)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestSecureProvider_ListSecretPathsSecrets(t *testing.T) {
+	expectedKeys := []string{"username", "password", "config"}
+	mock := &mocks.SecretClient{}
+	mock.On("GetKeys", "").Return(expectedKeys, nil)
+
+	tests := []struct {
+		Name        string
+		Config      TestConfig
+		Client      secrets.SecretClient
+		ExpectError bool
+	}{
+		{"Valid Secure", TestConfig{}, mock, false},
+		{"Invalid No Client", TestConfig{}, nil, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.MockLogger{}, nil, nil, "testService")
+			target.SetClient(tc.Client)
+			actual, err := target.ListSecretPaths()
+			if tc.ExpectError {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, expectedKeys, actual)
+		})
+	}
+}
+
+func TestSecureProvider_SecretUpdatedAtPath(t *testing.T) {
+	callbackCalled := false
+	callback := func(path string) {
+		callbackCalled = true
+	}
+
+	tests := []struct {
+		Name     string
+		Config   TestConfig
+		Path     string
+		Callback func(path string)
+	}{
+		{"Valid Secure", TestConfig{}, expectedPath, callback},
+		{"Valid No Callbacks", TestConfig{}, expectedPath, nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			callbackCalled = false
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.NewMockClient(), nil, nil, "testService")
+
+			if tc.Callback != nil {
+				target.registeredSecretCallbacks[tc.Path] = tc.Callback
+			}
+
+			target.SecretUpdatedAtPath(tc.Path)
+			assert.Equal(t, tc.Callback != nil, callbackCalled)
+		})
+	}
+}
+
+func TestSecureProvider_RegisteredSecretUpdatedCallback(t *testing.T) {
+	tests := []struct {
+		Name     string
+		Config   TestConfig
+		Path     string
+		Callback func(path string)
+	}{
+		{"Valid Secure", TestConfig{}, expectedPath, func(path string) {}},
+		{"Valid No Callbacks", TestConfig{}, expectedPath, nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.NewMockClient(), nil, nil, "testService")
+			err := target.RegisteredSecretUpdatedCallback(tc.Path, tc.Callback)
+			assert.NoError(t, err)
+
+			if tc.Callback != nil {
+				assert.NotEmpty(t, target.registeredSecretCallbacks[tc.Path])
+			} else {
+				assert.Nil(t, target.registeredSecretCallbacks[tc.Path])
+			}
+		})
+	}
+}
+
+func TestSecureProvider_DeregisterSecretUpdatedCallback(t *testing.T) {
+	tests := []struct {
+		Name     string
+		Config   TestConfig
+		Path     string
+		Callback func(path string)
+	}{
+		{"Valid Secure", TestConfig{}, expectedPath, func(path string) {}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			target := NewSecureProvider(context.Background(), secretStoreConfig(t), logger.NewMockClient(), nil, nil, "testService")
+
+			// Register a path.
+			err := target.RegisteredSecretUpdatedCallback(tc.Path, tc.Callback)
+			assert.NoError(t, err)
+
+			// Deregister a path.
+			target.DeregisterSecretUpdatedCallback(tc.Path)
+			assert.Empty(t, target.registeredSecretCallbacks)
+		})
+	}
+}
+
+func secretStoreConfig(t *testing.T) *config.SecretStoreInfo {
+	lc := logger.NewMockClient()
+	envVars := environment.NewVariables(lc)
+	config, err := BuildSecretStoreConfig("unit-test", envVars, lc)
+	require.NoError(t, err)
+	return config
 }

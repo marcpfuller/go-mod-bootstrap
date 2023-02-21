@@ -19,14 +19,16 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/config"
+	loggerMocks "github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger/mocks"
+	"github.com/stretchr/testify/mock"
 
-	"github.com/edgexfoundry/go-mod-configuration/v2/pkg/types"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-	secretsTypes "github.com/edgexfoundry/go-mod-secrets/v2/pkg/types"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
 
+	"github.com/edgexfoundry/go-mod-configuration/v3/pkg/types"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,6 +74,22 @@ func TestOverrideConfigProviderInfo(t *testing.T) {
 	assert.Equal(t, providerConfig.Port, expectedPortValue)
 	assert.Equal(t, providerConfig.Type, expectedTypeValue)
 	assert.Equal(t, providerConfig.Protocol, expectedProtocolValue)
+}
+
+func TestOverrideConfigProviderInfo_none(t *testing.T) {
+	providerConfig, lc := initializeTest()
+
+	err := os.Setenv(envKeyConfigUrl, noConfigProviderValue)
+	require.NoError(t, err)
+
+	env := NewVariables(lc)
+	providerConfig, err = env.OverrideConfigProviderInfo(providerConfig)
+
+	assert.NoError(t, err)
+	assert.Empty(t, providerConfig.Host)
+	assert.Empty(t, providerConfig.Port)
+	assert.Empty(t, providerConfig.Type)
+	assert.Empty(t, providerConfig.Protocol)
 }
 
 func TestOverrideConfigProviderInfo_NoEnvVariables(t *testing.T) {
@@ -132,7 +150,7 @@ func TestGetStartupInfo(t *testing.T) {
 	}
 }
 
-func TestGetConfDir(t *testing.T) {
+func TestGetConfigDir(t *testing.T) {
 	_, lc := initializeTest()
 
 	testCases := []struct {
@@ -141,9 +159,9 @@ func TestGetConfDir(t *testing.T) {
 		PassedInName string
 		ExpectedName string
 	}{
-		{"With Env Var", envConfDir, "res", "myres"},
+		{"With Env Var", envConfigDir, "res", "myres"},
 		{"With No Env Var", "", "res", "res"},
-		{"With No Env Var and no passed in", "", "", defaultConfDirValue},
+		{"With No Env Var and no passed in", "", "", defaultConfigDirValue},
 	}
 
 	for _, test := range testCases {
@@ -155,7 +173,7 @@ func TestGetConfDir(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			actual := GetConfDir(lc, test.PassedInName)
+			actual := GetConfigDir(lc, test.PassedInName)
 			assert.Equal(t, test.ExpectedName, actual)
 		})
 	}
@@ -200,7 +218,7 @@ func TestGetConfigFileName(t *testing.T) {
 		PassedInName string
 		ExpectedName string
 	}{
-		{"With Env Var", envFile, "configuration.toml", "config.toml"},
+		{"With Env Var", envConfigFile, "configuration.toml", "config.toml"},
 		{"With No Env Var", "", "configuration.toml", "configuration.toml"},
 		{"With No Env Var and no passed in", "", "", ""},
 	}
@@ -280,10 +298,9 @@ func TestOverrideConfigurationExactCase(t *testing.T) {
 	_, lc := initializeTest()
 
 	serviceConfig := struct {
-		Registry    config.RegistryInfo
-		List        []string
-		FloatVal    float32
-		SecretStore config.SecretStoreInfo
+		Registry config.RegistryInfo
+		List     []string
+		FloatVal float32
 	}{
 		Registry: config.RegistryInfo{
 			Host: "localhost",
@@ -292,11 +309,6 @@ func TestOverrideConfigurationExactCase(t *testing.T) {
 		},
 		List:     []string{"val1"},
 		FloatVal: float32(11.11),
-		SecretStore: config.SecretStoreInfo{
-			Authentication: secretsTypes.AuthenticationInfo{
-				AuthType: "none",
-			},
-		},
 	}
 
 	// only all upper case environment variable names now, so none of these overrides should have worked.
@@ -324,22 +336,19 @@ func TestOverrideConfigurationExactCase(t *testing.T) {
 func TestOverrideConfigurationUppercase(t *testing.T) {
 	_, lc := initializeTest()
 
-	expectedOverrideCount := 5
+	expectedOverrideCount := 4
 	expectedRegistryHost := "edgex-core-consul"
 	expectedCoreDataHost := "edgex-core-data"
 	expectedList := []string{"joe", "mary", "bob"}
 	expectedFloatVal := float32(24.234)
-	expectedAuthType := "secure"
-	expectedAuthToken := "token"
 
 	coreDataClientKey := "edgex-core-data"
 
 	serviceConfig := struct {
-		Registry    config.RegistryInfo
-		List        []string
-		FloatVal    float32
-		SecretStore config.SecretStoreInfo
-		Clients     map[string]config.ClientInfo
+		Registry config.RegistryInfo
+		List     []string
+		FloatVal float32
+		Clients  map[string]config.ClientInfo
 	}{
 		Registry: config.RegistryInfo{
 			Host: "localhost",
@@ -348,12 +357,6 @@ func TestOverrideConfigurationUppercase(t *testing.T) {
 		},
 		List:     []string{"val1"},
 		FloatVal: float32(11.11),
-		SecretStore: config.SecretStoreInfo{
-			Authentication: secretsTypes.AuthenticationInfo{
-				AuthType:  "none",
-				AuthToken: expectedAuthToken,
-			},
-		},
 		Clients: map[string]config.ClientInfo{
 			coreDataClientKey: {
 				Host:     "localhost",
@@ -368,7 +371,6 @@ func TestOverrideConfigurationUppercase(t *testing.T) {
 	_ = os.Setenv("LIST", " joe,mary  ,  bob  ")
 	strVal := fmt.Sprintf("%v", expectedFloatVal)
 	_ = os.Setenv("FLOATVAL", strVal)
-	_ = os.Setenv("SECRETSTORE_AUTHENTICATION_AUTHTYPE", expectedAuthType)
 	// Lowercase will not match, so value will not change
 	_ = os.Setenv("secretstore_authentication_authtoken", "NoToken")
 
@@ -381,23 +383,18 @@ func TestOverrideConfigurationUppercase(t *testing.T) {
 	assert.Equal(t, expectedCoreDataHost, serviceConfig.Clients[coreDataClientKey].Host)
 	assert.Equal(t, expectedList, serviceConfig.List)
 	assert.Equal(t, expectedFloatVal, serviceConfig.FloatVal)
-	assert.Equal(t, expectedAuthType, serviceConfig.SecretStore.Authentication.AuthType)
-	assert.Equal(t, expectedAuthToken, serviceConfig.SecretStore.Authentication.AuthToken)
 }
 
 func TestOverrideConfigurationWithBlankValue(t *testing.T) {
 	_, lc := initializeTest()
 
-	expectedOverrideCount := 3
+	expectedOverrideCount := 1
 	expectedHost := ""
-	expectedAuthType := ""
-	expectedAuthToken := ""
 
 	serviceConfig := struct {
-		Registry    config.RegistryInfo
-		List        []string
-		FloatVal    float32
-		SecretStore config.SecretStoreInfo
+		Registry config.RegistryInfo
+		List     []string
+		FloatVal float32
 	}{
 		Registry: config.RegistryInfo{
 			Host: "localhost",
@@ -406,17 +403,9 @@ func TestOverrideConfigurationWithBlankValue(t *testing.T) {
 		},
 		List:     []string{"val1"},
 		FloatVal: float32(11.11),
-		SecretStore: config.SecretStoreInfo{
-			Authentication: secretsTypes.AuthenticationInfo{
-				AuthType:  "none",
-				AuthToken: expectedAuthToken,
-			},
-		},
 	}
 
 	_ = os.Setenv("REGISTRY_HOST", expectedHost)
-	_ = os.Setenv("SECRETSTORE_AUTHENTICATION_AUTHTYPE", expectedAuthType)
-	_ = os.Setenv("SECRETSTORE_AUTHENTICATION_AUTHTOKEN", expectedAuthToken)
 
 	env := NewVariables(lc)
 	actualCount, err := env.OverrideConfiguration(&serviceConfig)
@@ -424,33 +413,92 @@ func TestOverrideConfigurationWithBlankValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, expectedOverrideCount, actualCount)
 	assert.Equal(t, expectedHost, serviceConfig.Registry.Host)
-	assert.Equal(t, expectedAuthType, serviceConfig.SecretStore.Authentication.AuthType)
-	assert.Equal(t, expectedAuthToken, serviceConfig.SecretStore.Authentication.AuthToken)
 }
 
-func TestOverrideConfigurationWithEqualInValue(t *testing.T) {
+func TestOverrideSecretStoreInfo(t *testing.T) {
 	_, lc := initializeTest()
 
-	expectedOverrideCount := 1
+	expectedOverrideCount := 3
 	expectedAuthToken := "123456=789"
+	expectedHost := "edgex-vault"
+	expectedPort := 8200
 
-	serviceConfig := struct {
+	wrapper := struct {
 		SecretStore config.SecretStoreInfo
 	}{
-		SecretStore: config.SecretStoreInfo{
-			Authentication: secretsTypes.AuthenticationInfo{
-				AuthType:  "none",
-				AuthToken: expectedAuthToken,
-			},
-		},
+		SecretStore: config.NewSecretStoreInfo("unit-test"),
 	}
 
 	_ = os.Setenv("SECRETSTORE_AUTHENTICATION_AUTHTOKEN", expectedAuthToken)
+	_ = os.Setenv("SECRETSTORE_HOST", expectedHost)
+	_ = os.Setenv("SECRETSTORE_PORT", fmt.Sprintf("%d", expectedPort))
 
 	env := NewVariables(lc)
-	actualCount, err := env.OverrideConfiguration(&serviceConfig)
+
+	actualCount, err := env.OverrideConfiguration(&wrapper)
 
 	require.NoError(t, err)
 	assert.Equal(t, expectedOverrideCount, actualCount)
-	assert.Equal(t, expectedAuthToken, serviceConfig.SecretStore.Authentication.AuthToken)
+	assert.Equal(t, expectedAuthToken, wrapper.SecretStore.Authentication.AuthToken)
+	assert.Equal(t, expectedHost, wrapper.SecretStore.Host)
+	assert.Equal(t, expectedPort, wrapper.SecretStore.Port)
+}
+
+func TestLogEnvironmentOverride(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		value    string
+		redacted bool
+	}{
+		{
+			name:     "basic variable - not redacted",
+			path:     "Writable.LogLevel",
+			value:    "DEBUG",
+			redacted: false,
+		},
+		{
+			name:     "insecure secret value - redacted",
+			path:     "Writable.InsecureSecrets.credentials001.Secrets.password",
+			value:    "HelloWorld!",
+			redacted: true,
+		},
+		{
+			name:     "insecure secret value - redacted 2",
+			path:     "Writable.InsecureSecrets.credentials001.Secrets.username",
+			value:    "admin",
+			redacted: true,
+		},
+		{
+			name:     "insecure secret path - not redacted",
+			path:     "Writable.InsecureSecrets.credentials001.Path",
+			value:    "credentials001",
+			redacted: false,
+		},
+	}
+
+	mockLogger := &loggerMocks.LoggingClient{}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			key := strings.ReplaceAll(strings.ToUpper(test.path), ".", "_")
+
+			// specifically expect the method to be called with the values we pass in plus the format string
+			// and any value (can be redacted or not)
+			mockLogger.On("Infof", mock.AnythingOfType("string"),
+				test.path, key, mock.AnythingOfType("string")).Return().Once()
+
+			logEnvironmentOverride(mockLogger, test.path, key, test.value)
+
+			mockLogger.AssertExpectations(t)
+			if test.redacted {
+				// make sure it was called with the redacted placeholder string.
+				mockLogger.AssertCalled(t, "Infof", mock.AnythingOfType("string"), test.path, key, redactedStr)
+			} else {
+				// make sure the original value was logged.
+				mockLogger.AssertCalled(t, "Infof", mock.AnythingOfType("string"), test.path, key, test.value)
+			}
+		})
+	}
 }

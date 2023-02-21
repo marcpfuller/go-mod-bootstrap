@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Copyright 2018 Dell Inc.
- * Copyright 2022 Intel Inc.
- * Copyright 2021 IOTech Ltd.
+ * Copyright 2023 Intel Corporation
+ * Copyright 2021-2022 IOTech Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -20,12 +20,25 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/common"
-
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/types"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/common"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/types"
+	"github.com/edgexfoundry/go-mod-secrets/v3/secrets"
 )
 
-const DefaultHttpProtocol = "http"
+const (
+	DefaultHttpProtocol = "http"
+)
+
+const (
+	ServiceTypeApp    = "app-service"
+	ServiceTypeDevice = "device-service"
+	ServiceTypeOther  = "other"
+	//TOOD: add security-service to use in place of useSecretProvider
+)
+
+const (
+	CommonConfigDone = "IsCommonConfigReady"
+)
 
 // ServiceInfo contains configuration settings necessary for the basic operation of any EdgeX service.
 type ServiceInfo struct {
@@ -121,6 +134,8 @@ type ClientInfo struct {
 	Port int
 	// Protocol indicates the protocol to use when accessing a given service
 	Protocol string
+	// UseMessageBus indicates weather to use Messaging version of client
+	UseMessageBus bool
 }
 
 func (c ClientInfo) Url() string {
@@ -151,6 +166,35 @@ type SecretStoreInfo struct {
 	RuntimeTokenProvider types.RuntimeTokenProviderInfo
 }
 
+func NewSecretStoreInfo(serviceKey string) SecretStoreInfo {
+	return SecretStoreInfo{
+		Type:                    secrets.Vault,
+		Protocol:                "http",
+		Host:                    "localhost",
+		Port:                    8200,
+		Path:                    serviceKey,
+		TokenFile:               fmt.Sprintf("/tmp/edgex/secrets/%s/secrets-token.json", serviceKey),
+		DisableScrubSecretsFile: false,
+		Namespace:               "",
+		RootCaCertPath:          "",
+		ServerName:              "",
+		SecretsFile:             "",
+		Authentication: types.AuthenticationInfo{
+			AuthType:  "X-Vault-Token",
+			AuthToken: "",
+		},
+		RuntimeTokenProvider: types.RuntimeTokenProviderInfo{
+			Enabled:         false,
+			Protocol:        "https",
+			Host:            "localhost",
+			Port:            59841,
+			TrustDomain:     "edgexfoundry.org",
+			EndpointSocket:  "/tmp/edgex/secrets/spiffe/public/api.sock",
+			RequiredSecrets: "redisdb",
+		},
+	}
+}
+
 type Database struct {
 	Type    string
 	Timeout int
@@ -165,7 +209,7 @@ type Credentials struct {
 	Password string
 }
 
-//CertKeyPair encapsulates public certificate/private key pair for an SSL certificate
+// CertKeyPair encapsulates public certificate/private key pair for an SSL certificate
 type CertKeyPair struct {
 	Cert string
 	Key  string
@@ -182,15 +226,18 @@ type InsecureSecretsInfo struct {
 
 // BootstrapConfiguration defines the configuration elements required by the bootstrap.
 type BootstrapConfiguration struct {
-	Clients     map[string]ClientInfo
-	Service     ServiceInfo
-	Config      ConfigProviderInfo
-	Registry    RegistryInfo
-	SecretStore SecretStoreInfo
+	Clients      map[string]ClientInfo
+	Service      ServiceInfo
+	Config       ConfigProviderInfo
+	Registry     RegistryInfo
+	MessageBus   MessageBusInfo
+	ExternalMQTT ExternalMQTTInfo
 }
 
-// MessageBusInfo provides parameters related to connecting to a message bus as a publisher
+// MessageBusInfo provides parameters related to connecting to the EdgeX MessageBus
 type MessageBusInfo struct {
+	// Disabled indicates if the use of the EdgeX MessageBus is disabled.
+	Disabled bool
 	// Indicates the message bus implementation to use, i.e. zero, mqtt, redisstreams...
 	Type string
 	// Protocol indicates the protocol to use when accessing the message bus.
@@ -199,25 +246,66 @@ type MessageBusInfo struct {
 	Host string
 	// Port defines the port on which to access the message bus.
 	Port int
-	// PublishTopicPrefix indicates the topic prefix the data is published to.
-	PublishTopicPrefix string
-	// SubscribeTopic indicates the topic in which to subscribe.
-	SubscribeTopic string
 	// AuthMode specifies the type of secure connection to the message bus which are 'none', 'usernamepassword'
 	// 'clientcert' or 'cacert'. Not all option supported by each implementation.
-	// ZMQ doesn't support any Authmode beyond 'none', RedisStreams only supports 'none' & 'usernamepassword'
-	// while MQTT supports all options.
+	// RedisStreams only supports 'none' & 'usernamepassword' while MQTT and NATS support all options.
 	AuthMode string
 	// SecretName is the name of the secret in the SecretStore that contains the Auth Credentials. The credential are
 	// dynamically loaded using this name and store the Option property below where the implementation expected to
 	// find them.
 	SecretName string
+	// BaseTopicPrefix is the base topic prefix that all topics start with.
+	// If not set the DefaultBaseTopic constant is used.
+	BaseTopicPrefix string
 	// Provides additional configuration properties which do not fit within the existing field.
-	// Typically the key is the name of the configuration property and the value is a string representation of the
+	// Typically, the key is the name of the configuration property and the value is a string representation of the
 	// desired value for the configuration property.
 	Optional map[string]string
-	// SubscribeEnabled indicates whether enable the subscription to the Message Queue
-	SubscribeEnabled bool
+}
+
+func (m MessageBusInfo) GetBaseTopicPrefix() string {
+	if len(m.BaseTopicPrefix) == 0 {
+		return common.DefaultBaseTopic
+	}
+
+	return m.BaseTopicPrefix
+}
+
+type ExternalMQTTInfo struct {
+	// Url contains the fully qualified URL to connect to the MQTT broker
+	Url string
+	// SubscribeTopics is a comma separated list of topics in which to subscribe
+	SubscribeTopics string
+	// PublishTopic is the topic to publish pipeline output (if any)
+	PublishTopic string
+	// Topics allows ExternalMQTTInfo to be more flexible with respect to topics.
+	// TODO: move PublishTopic and SubscribeTopics to Topics in EdgeX 3.0
+	Topics map[string]string
+	// ClientId to connect to the broker with.
+	ClientId string
+	// ConnectTimeout is a time duration indicating how long to wait timing out on the broker connection
+	ConnectTimeout string
+	// AutoReconnect indicated whether to retry connection if disconnected
+	AutoReconnect bool
+	// KeepAlive is seconds between client ping when no active data flowing to avoid client being disconnected
+	KeepAlive int64
+	// QoS for MQTT Connection
+	QoS byte
+	// Retain setting for MQTT Connection
+	Retain bool
+	// SkipCertVerify indicates if the certificate verification should be skipped
+	SkipCertVerify bool
+	// SecretPath is the name of the path in secret provider to retrieve your secrets
+	SecretPath string
+	// AuthMode indicates what to use when connecting to the broker. Options are "none", "cacert" , "usernamepassword", "clientcert".
+	// If a CA Cert exists in the SecretPath then it will be used for all modes except "none".
+	AuthMode string
+	// RetryDuration indicates how long (in seconds) to wait timing out on the MQTT client creation
+	RetryDuration int
+	// RetryInterval indicates the time (in seconds) that will be waited between attempts to create MQTT client
+	RetryInterval int
+	// Enabled determines whether the service needs to connect to the external MQTT broker
+	Enabled bool
 }
 
 // URL constructs a URL from the protocol, host and port and returns that as a string.
@@ -229,9 +317,6 @@ func (p MessageBusInfo) URL() string {
 type TelemetryInfo struct {
 	// Interval is the time duration in which to collect and report the service's metrics
 	Interval string
-	// PublishTopicPrefix is the base topic in which to publish (report) the service's metrics to the EdgeX MessageBus
-	// The service name and the metric name are appended to this base topic. i.e. <prefix>/<service-name>/<metric-name>
-	PublishTopicPrefix string
 	// Metrics is the list of service's metrics that can be collected. Each of the service's metrics must be in the list
 	// and set to true if enable or false if disabled.
 	Metrics map[string]bool

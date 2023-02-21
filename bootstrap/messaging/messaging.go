@@ -23,11 +23,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/container"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/secret"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/config"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/di"
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/container"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/secret"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/di"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
 )
 
 const (
@@ -96,7 +96,9 @@ func SetOptionsAuthData(messageBusInfo *config.MessageBusInfo, lc logger.Logging
 	case AuthModeCert:
 		messageBusInfo.Optional[OptionsCertPEMBlockKey] = string(secretData.CertPemBlock)
 		messageBusInfo.Optional[OptionsKeyPEMBlockKey] = string(secretData.KeyPemBlock)
-	case AuthModeCA:
+	}
+
+	if len(secretData.CaPemBlock) > 0 {
 		messageBusInfo.Optional[OptionsCaPEMBlockKey] = string(secretData.CaPemBlock)
 	}
 

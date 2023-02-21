@@ -21,24 +21,34 @@ import (
 	"path"
 	"strings"
 
-	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/types"
-	"github.com/edgexfoundry/go-mod-secrets/v2/secrets"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/environment"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/config"
+	"github.com/edgexfoundry/go-mod-core-contracts/v3/clients/logger"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/types"
+	"github.com/edgexfoundry/go-mod-secrets/v3/secrets"
 
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/container"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/interfaces"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/bootstrap/startup"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/config"
-	"github.com/edgexfoundry/go-mod-bootstrap/v2/di"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/container"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/interfaces"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/bootstrap/startup"
+	"github.com/edgexfoundry/go-mod-bootstrap/v3/di"
 
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/authtokenloader"
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/fileioperformer"
-	"github.com/edgexfoundry/go-mod-secrets/v2/pkg/token/runtimetokenprovider"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/authtokenloader"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/fileioperformer"
+	"github.com/edgexfoundry/go-mod-secrets/v3/pkg/token/runtimetokenprovider"
+)
+
+// secret service Metric Names
+const (
+	secretsRequestedMetricName        = "SecuritySecretsRequested"
+	secretsStoredMetricName           = "SecuritySecretsStored"
+	securityConsulTokensRequestedName = "SecurityConsulTokensRequested"
+	securityConsulTokenDurationName   = "SecurityConsulTokenDuration"
 )
 
 // NewSecretProvider creates a new fully initialized the Secret Provider.
 func NewSecretProvider(
 	configuration interfaces.Configuration,
+	envVars *environment.Variables,
 	ctx context.Context,
 	startupTimer startup.Timer,
 	dic *di.Container,
@@ -54,7 +64,10 @@ func NewSecretProvider(
 
 		lc.Info("Creating SecretClient")
 
-		secretStoreConfig := configuration.GetBootstrap().SecretStore
+		secretStoreConfig, err := BuildSecretStoreConfig(serviceKey, envVars, lc)
+		if err != nil {
+			return nil, err
+		}
 
 		for startupTimer.HasNotElapsed() {
 			var secretConfig types.SecretConfig
@@ -74,7 +87,7 @@ func NewSecretProvider(
 
 			secretConfig, err = getSecretConfig(secretStoreConfig, tokenLoader, runtimeTokenLoader, serviceKey, lc)
 			if err == nil {
-				secureProvider := NewSecureProvider(ctx, configuration, lc, tokenLoader, runtimeTokenLoader, serviceKey)
+				secureProvider := NewSecureProvider(ctx, secretStoreConfig, lc, tokenLoader, runtimeTokenLoader, serviceKey)
 				var secretClient secrets.SecretClient
 
 				lc.Info("Attempting to create secret client")
@@ -129,9 +142,27 @@ func NewSecretProvider(
 	return provider, nil
 }
 
+// BuildSecretStoreConfig is public helper function that builds the SecretStore configuration
+// from default values and  environment override.
+func BuildSecretStoreConfig(serviceKey string, envVars *environment.Variables, lc logger.LoggingClient) (*config.SecretStoreInfo, error) {
+	configWrapper := struct {
+		SecretStore config.SecretStoreInfo
+	}{
+		SecretStore: config.NewSecretStoreInfo(serviceKey),
+	}
+
+	count, err := envVars.OverrideConfiguration(&configWrapper)
+	if err != nil {
+		return nil, fmt.Errorf("failed to override SecretStore information: %v", err)
+	}
+
+	lc.Infof("SecretStore information created with %d overrides applied", count)
+	return &configWrapper.SecretStore, nil
+}
+
 // getSecretConfig creates a SecretConfig based on the SecretStoreInfo configuration properties.
 // If a token file is present it will override the Authentication.AuthToken value.
-func getSecretConfig(secretStoreInfo config.SecretStoreInfo,
+func getSecretConfig(secretStoreInfo *config.SecretStoreInfo,
 	tokenLoader authtokenloader.AuthTokenLoader,
 	runtimeTokenLoader runtimetokenprovider.RuntimeTokenProvider,
 	serviceKey string,
